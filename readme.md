@@ -83,8 +83,8 @@ python update_pure.py
 
 ### `update_pure.py`
 - **Main Functions**:
+  - 'user_choice()': lets user choose between update all or a specific employee
   - `update_persons()`: Updates person records in Pure using harvested data.
-  - `extract_entry_by_primary_id()`: Extracts a specific entry from the harvested data based on `solisid`.
   - `main()`: Handles user input to update either all profiles or a specific profile.
 
 ## Notes
@@ -92,5 +92,5 @@ python update_pure.py
 - The whole process of harvesting and updating profiles may take between 2 to 3 hours.
 
 ## License
-This project is proprietary and not open source. Contact the author for more information.
+This project is open source. Contact the author for more information.
 
