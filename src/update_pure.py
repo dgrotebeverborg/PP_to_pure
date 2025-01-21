@@ -66,7 +66,7 @@ def update_persons(updated_response_json):
 
         api_url = API_NEW_BASE + 'persons/' + data['uuid']
         response = requests.put(api_url, headers=headers, json=data)
-        print(response.text)
+
 
 
 def read_json():
@@ -133,10 +133,10 @@ def main():
     user_choice = get_user_choice()
     # Read the CSV file into a DataFrame
     # Define the path to the saved merged DataFrame
-    output_path = os.path.join(files_dir, 'merged_uustaff_results.csv')
+    output_path = os.path.join(files_dir, 'uustaff_results.csv')
     try:
         merged_df = pd.read_csv(output_path)
-        print("Merged DataFrame successfully loaded.")
+        print("DataFrame successfully loaded.")
     except FileNotFoundError:
         print(f"File not found: {output_path}")
         exit

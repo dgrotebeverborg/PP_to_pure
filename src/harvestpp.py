@@ -1,10 +1,9 @@
 import base64
-
 import requests
 import os
 import pathlib
 import configparser
-import ricgraph as rcg
+
 import pandas as pd
 from datetime import datetime, time
 import numpy as np
@@ -69,6 +68,18 @@ UUSTAFF_PHOTO_ENDPOINT = '/Public/GetImage?Employee='
 project_root = os.path.dirname(os.path.dirname(__file__))  # Go up one level from src/
 files_dir = os.path.join(project_root, 'files')
 
+def timestamp(seconds: bool = False) -> str:
+    """Get a timestamp only consisting of a time.
+
+    :param seconds: If True, also show seconds in the timestamp.
+    :return: the timestamp.
+    """
+    now = datetime.now()
+    if seconds:
+        time_stamp = now.strftime("%H:%M:%S")
+    else:
+        time_stamp = now.strftime("%H:%M")
+    return time_stamp
 
 def harvest_json_uustaffpages(url: str, max_recs_to_harvest: int = 0) -> list:
     """
@@ -86,7 +97,7 @@ def harvest_json_uustaffpages(url: str, max_recs_to_harvest: int = 0) -> list:
     for faculty_nr in range(UUSTAFF_MAX_FACULTY_NR):
         if count >= max_recs_to_harvest:
             break
-        print('[faculty nr ' + str(faculty_nr) + ' at ' + rcg.timestamp() + ']')
+        print('[faculty nr ' + str(faculty_nr) + ' at ' + timestamp() + ']')
         # 'l-EN' ensures that phone numbers are preceded with "+31".
         # 'fullresult=true' or '=false' only differ in 'Guid' field value.
         faculty_url = url + UUSTAFF_FACULTY_ENDPOINT + str(faculty_nr) + '&l=EN&fullresult=true'
@@ -145,13 +156,26 @@ def harvest_json_uustaffpages(url: str, max_recs_to_harvest: int = 0) -> list:
 
             count += 1
             if count % 50 == 0:
-                print(count, '(' + rcg.timestamp() + ')  ', end='', flush=True)
+                print(count, '(' + timestamp() + ')  ', end='', flush=True)
             if count % 500 == 0:
                 print('\n', end='', flush=True)
 
-    print('Done at ' + rcg.timestamp() + '.\n')
+    print('Done at ' + timestamp() + '.\n')
 
     return json_data
+
+def datetimestamp(seconds: bool = False) -> str:
+    """Get a timestamp consisting of a date and a time.
+
+    :param seconds: If True, also show seconds in the timestamp.
+    :return: the timestamp.
+    """
+    now = datetime.now()
+    if seconds:
+        datetime_stamp = now.strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        datetime_stamp = now.strftime("%Y-%m-%d %H:%M")
+    return datetime_stamp
 
 
 
@@ -180,63 +204,80 @@ def harvest_json_and_write_to_file_uustaffpages(filename: str,
         json.dump(json_data, json_file, indent=4)
     return json_data
 
+
 def connect_pure_with_uustaffpages(url, solislist):
     """
     :param url: The base URL for the UU staff pages API endpoint.
     :param solislist: A list of dictionaries, where each dictionary contains `employee_id` and `uuid` of individuals.
     :return: A pandas DataFrame containing the parsed and consolidated data of SolisIDs and corresponding UU staff pages information.
     """
-    print('STEP 3: Connect Pure SolisIDs with corresponding persons from UU staff pages at '
-          + rcg.datetimestamp() + '...')
-    # nodes_with_solisid = rcg.read_all_nodes(name='EMPLOYEE_ID')
-    # print('There are ' + str(len(nodes_with_solisid)) + ' SolisID records, parsing record: 0  ', end='')
+    print('STEP 3: Connect Pure SolisIDs with corresponding persons from UU staff pages from ' + url + UUSTAFF_SOLISID_ENDPOINT
+         + ' in batches of 50...')
     parse_result = pd.DataFrame()
-    parse_chunk = []                # list of dictionaries
-    count = 0
+    parse_chunk = []  # List of dictionaries for parsed results
+    batch_size = 50  # Number of SolisIDs to process in a single request
 
-    for solis in solislist:
-        count += 1
-        if count % 50 == 0:
-            print(count, '(' + rcg.timestamp() + ')  ', end='', flush=True)
-        if count % 500 == 0:
-            print('\n', end='', flush=True)
-        solis_id = solis['employee_id']
-        solis_url = url + UUSTAFF_SOLISID_ENDPOINT + solis_id
+    # Group the SolisIDs into batches of `batch_size`
+    solis_batches = [solislist[i:i + batch_size] for i in range(0, len(solislist), batch_size)]
+
+    for batch_index, batch in enumerate(solis_batches, start=1):
+
+        solis_ids = ",".join(solis['employee_id'] for solis in batch)
+        solis_url = f"{url}{UUSTAFF_SOLISID_ENDPOINT}{solis_ids}"
+
+
         response = requests.get(solis_url)
         if response.status_code != requests.codes.ok:
-            print('connect_pure_with_uustaffpages(): error during harvest solisID.')
+            print('connect_pure_with_uustaffpages(): error during batch request.')
             print('Status code: ' + str(response.status_code))
             print('Url: ' + response.url)
             print('Error: ' + response.text)
             exit(1)
-        page = response.json()
-        if len(page) == 0:
-            continue
-        if 'UrlEN' in page[0]:
-            uustaff_page_url = str(page[0]['UrlEN'])
-        elif 'UrlNL' in page:
-            uustaff_page_url = str(page[0]['UrlNL'])
-        else:
-            # Link to staff page not present, continue.
+
+        pages = response.json()
+        if not pages:
             continue
 
-        path = pathlib.PurePath(uustaff_page_url)
-        parse_line = {'SOLIS_ID': str(solis_id),
-                      'UUID': str(solis['uuid']),
-                      'DescriptionEN': str(page[0]['DescriptionEN']),
-                      'DescriptionNL': str(page[0]['DescriptionNL']),
-                      'UrlProfielfoto': str(page[0]['UrlProfielfoto']),
-                      'ToestemmingProfielfotoInExterneApps': str(page[0]['ToestemmingProfielfotoInExterneApps']),
-                      'UUSTAFF_PAGE_ID': str(path.name)}
-        parse_chunk.append(parse_line)
+        for page in pages:
+            solis_id = (page.get('SolisID') or '').upper()
+            if not solis_id:
+                continue
 
-    # print(count, '\n', end='', flush=True)
-    print('Done at ' + rcg.timestamp() + '.\n')
+            uustaff_page_url = page.get('UrlEN') or page.get('UrlNL', '')
+            if not uustaff_page_url:
+                continue
+
+            path = pathlib.PurePath(uustaff_page_url)
+            solis_uuid = next((solis['uuid'] for solis in batch if solis['employee_id'] == solis_id), None)
+
+            parse_line = {
+                'SOLIS_ID': str(solis_id),
+                'UUID': str(solis_uuid) if solis_uuid else '',
+                'Email': str(page.get('Email', '')),
+                'DescriptionEN': str(page.get('DescriptionEN', '')),
+                'DescriptionNL': str(page.get('DescriptionNL', '')),
+                'UrlProfielfoto': str(page.get('UrlProfielfoto', '')),
+                'UrlEN': str(page.get('UrlEN', '')),
+                'ToestemmingProfielfotoInExterneApps': str(page.get('ToestemmingProfielfotoInExterneApps', '')),
+                'UUSTAFF_PAGE_ID': str(path.name)
+            }
+
+            parse_chunk.append(parse_line)
+
+        # print(f'Batch {batch_index} processed at ' + timestamp())
+        count  = batch_index * 50
+        print(count, '(' + timestamp() + ')  ', end='', flush=True)
+        if count % 500 == 0:
+            print('\n', end='', flush=True)
+
+
+    print('\n', end='', flush=True)
 
     parse_chunk_df = pd.DataFrame(parse_chunk)
     parse_result = pd.concat([parse_result, parse_chunk_df], ignore_index=True)
     parse_result.dropna(axis=0, how='all', inplace=True)
     parse_result.drop_duplicates(keep='first', inplace=True, ignore_index=True)
+    print('Done at ' + timestamp() + '.\n')
     return parse_result
 
 
@@ -281,7 +322,7 @@ def persons_active():
             employee_id = None
             count += 1
             if count % 50 == 0:
-                print(count, '(' + rcg.timestamp() + ')  ', end='', flush=True)
+                print(count, '(' + timestamp() + ')  ', end='', flush=True)
             if count % 500 == 0:
                 print('\n', end='', flush=True)
             # Search for employee ID in the 'ids' list
@@ -301,8 +342,8 @@ def persons_active():
 
 
         # for testing
-        if page >50:
-            break
+        # if page >20:
+        #     break
 
 
     df_path = os.path.join(files_dir, 'active_persons.csv')
@@ -322,46 +363,46 @@ def dowload_profilepictures(parsed_results):
     print('STEP 4: start downloading profile pictures from PP')
     project_root = os.path.dirname(os.path.dirname(__file__))  # Go up one level from src/
     files_dir = os.path.join(project_root, 'files')
-    json_path = os.path.join(files_dir, 'filesuustaff_harvest.json')
-    # Load JSON data from file
-    try:
-        with open(json_path, 'r') as json_file:
-            uustaff = json.load(json_file)
-        # print(f"Data read from JSON: {uustaff}")
-    except FileNotFoundError:
-        print(f"File not found: {json_path}")
-    except json.JSONDecodeError as e:
-        print(f"Error decoding JSON: {e}")
-    file_path = "uustaff_harvest.json"
-
-    # Convert JSON data to a DataFrame
-    json_df = pd.DataFrame(uustaff)
-
-    # Rename the 'Employee_Id' column in json_df to match the 'UUSTAFF_PAGE_ID' column in the existing DataFrame
-    json_df.rename(columns={'Employee_Id': 'UUSTAFF_PAGE_ID'}, inplace=True)
-
-    # Merge the two DataFrames on 'UUSTAFF_PAGE_ID'
-
-    merged_df = parsed_results.merge(json_df, on='UUSTAFF_PAGE_ID', how='left')
-    # Define the path where the merged DataFrame should be saved
-    output_path = os.path.join(files_dir, 'merged_uustaff_results.csv')
+    # json_path = os.path.join(files_dir, 'filesuustaff_harvest.json')
+    # # Load JSON data from file
+    # try:
+    #     with open(json_path, 'r') as json_file:
+    #         uustaff = json.load(json_file)
+    #     # print(f"Data read from JSON: {uustaff}")
+    # except FileNotFoundError:
+    #     print(f"File not found: {json_path}")
+    # except json.JSONDecodeError as e:
+    #     print(f"Error decoding JSON: {e}")
+    # file_path = "uustaff_harvest.json"
+    #
+    # # Convert JSON data to a DataFrame
+    # json_df = pd.DataFrame(uustaff)
+    #
+    # # Rename the 'Employee_Id' column in json_df to match the 'UUSTAFF_PAGE_ID' column in the existing DataFrame
+    # json_df.rename(columns={'Employee_Id': 'UUSTAFF_PAGE_ID'}, inplace=True)
+    #
+    # # Merge the two DataFrames on 'UUSTAFF_PAGE_ID'
+    #
+    # merged_df = parsed_results.merge(json_df, on='UUSTAFF_PAGE_ID', how='left')
+    # # Define the path where the merged DataFrame should be saved
+    output_path = os.path.join(files_dir, 'uustaff_results.csv')
 
     # Save the merged DataFrame as a CSV file
-    merged_df.to_csv(output_path, index=False)
+    parsed_results.to_csv(output_path, index=False)
 
     # Merge the two DataFrames on 'UUSTAFF_PAGE_ID'
-    df = parsed_results.merge(json_df, on='UUSTAFF_PAGE_ID', how='left')
+    # df = parsed_results.merge(json_df, on='UUSTAFF_PAGE_ID', how='left')
     project_root = os.path.dirname(os.path.dirname(__file__))  # Go up one level from src/
     photos_dir = os.path.join(project_root, 'photos')
     # Ensure the 'photos' directory exists
     os.makedirs(photos_dir, exist_ok=True)
-    photodf = df[df['ToestemmingProfielfotoInExterneApps'] != 'False']
+    photodf = parsed_results[parsed_results['ToestemmingProfielfotoInExterneApps'] != 'False']
     count = 0
     for index, row in photodf.iterrows():
         url = row['UrlProfielfoto']
         count += 1
         if count % 50 == 0:
-            print(count, '(' + rcg.timestamp() + ')  ', end='', flush=True)
+            print(count, '(' + timestamp() + ')  ', end='', flush=True)
         if count % 500 == 0:
             print('\n', end='', flush=True)
 
@@ -383,7 +424,7 @@ def dowload_profilepictures(parsed_results):
         # else:
         #     # print(f"No URL found for {row['UUSTAFF_PAGE_ID']}")
     print('End downloading profile pictures from PP')
-    return merged_df
+    return parsed_results
 
 
 def fetch_person_data(merged_df):
@@ -415,7 +456,7 @@ def fetch_person_data(merged_df):
     for chunk in uuid_chunks:
         count += 1
         if count % 50 == 0:
-            print(count, '(' + rcg.timestamp() + ')  ', end='', flush=True)
+            print(count, '(' + timestamp() + ')  ', end='', flush=True)
         if count % 500 == 0:
             print('\n', end='', flush=True)
         # Prepare the payload
@@ -424,7 +465,7 @@ def fetch_person_data(merged_df):
             "size": 100,
             "offset": 0
         }
-        print (chunk)
+
         # Make the POST request
         try:
 
@@ -468,6 +509,12 @@ def modify_profile_photo(data, name):
                 "size": 102400,  # Size in bytes (should be <= 1MB)
                 "fileData": encoded_image,
                 "copyrightConfirmation": True,
+                "type": {
+                    "uri": "/dk/atira/pure/person/personfiles/portrait",
+                    "term": {
+                        "en_GB": "Portrait"
+                    }
+                },
                 "caption": {
                     "en": "Profile photo"
                 },
@@ -556,6 +603,7 @@ def update_profile_information(merged_df, response_json):
     today_date = datetime.combine(today_date, time())
     print('STEP 6: making the new jsonfile for all persons with new info')
 
+
     for result in response_json['results']:
         uuid = result['uuid']
 
@@ -567,27 +615,57 @@ def update_profile_information(merged_df, response_json):
             continue
 
         # Extract Bio
-        bio_value = row['Bio'].values[0] if pd.notna(row['Bio'].values[0]) else None
-        if bio_value:
+        bio_value = row['DescriptionEN'].values[0] if pd.notna(row['DescriptionEN'].values[0]) else \
+        row['DescriptionNL'].values[0] if pd.notna(row['DescriptionNL'].values[0]) else None
+
+        # Extract and format URL
+        raw_url = row['UrlEN'].values[0] if pd.notna(row['UrlEN'].values[0]) else None
+        url_value = f'<p><a href="{raw_url}">{raw_url}</a></p>' if raw_url else None
+
+        if bio_value or url_value:
             profile_info = result.get('profileInformation', [])
-            about_found = False
 
             # Update or add 'About' field
-            for info in profile_info:
-                if info['type']['term']['en_GB'] == 'About':
-                    info['value']['en_GB'] = bio_value
-                    about_found = True
-                    break
+            if bio_value:
+                about_found = False
+                for info in profile_info:
+                    if info['type']['term']['en_GB'] == 'About':
+                        info['value']['en_GB'] = bio_value
+                        about_found = True
+                        break
 
-            if not about_found:
-                new_about = {
-                    'value': {'en_GB': bio_value},
-                    'type': {
-                        'uri': URI_PROFILE,
-                        'term': {'en_GB': 'About'}
+                if not about_found:
+                    new_about = {
+                        'value': {'en_GB': bio_value},
+                        'type': {
+                            'uri': URI_PROFILE,
+                            'term': {'en_GB': 'About'}
+                        }
                     }
-                }
-                profile_info.append(new_about)
+                    profile_info.append(new_about)
+
+            # Update or add 'Link to Utrecht University staff page' field
+            if url_value:
+                url_found = False
+                for info in profile_info:
+                    if info['type']['term']['en_GB'] == 'Link to Utrecht University staff page':
+                        info['value']['en_GB'] = url_value
+                        url_found = True
+                        break
+
+                if not url_found:
+                    new_url = {
+                        'value': {'en_GB': url_value},
+                        'type': {
+                            'uri': "/dk/atira/pure/person/customfields/profiel_url",
+                            'term': {'en_GB': 'Link to Utrecht University staff page'}
+                        }
+                    }
+                    profile_info.append(new_url)
+
+            # Update the profile information in the result
+            result['profileInformation'] = profile_info
+
 
         # Extract Email
         email_value = row['Email'].values[0] if pd.notna(row['Email'].values[0]) else None
@@ -597,10 +675,13 @@ def update_profile_information(merged_df, response_json):
             print(f"Warning: No email found for UUID: {uuid}")
 
         # Extract UUSTAFF_PAGE_ID for modifying the profile photo
+        print()
         name = row['UUSTAFF_PAGE_ID'].values[0] if pd.notna(row['UUSTAFF_PAGE_ID'].values[0]) else None
         if name:
-            modify_profile_photo(result, name)
+            toestemmingfoto = row['ToestemmingProfielfotoInExterneApps'].values[0] if pd.notna(row['ToestemmingProfielfotoInExterneApps'].values[0]) else None
 
+            if toestemmingfoto == True:
+                modify_profile_photo(result, name)
         # Ensure the 'files' directory exists
         os.makedirs(files_dir, exist_ok=True)
         json_path = os.path.join(files_dir, 'input_for_pure2.json')
@@ -663,7 +744,7 @@ def print_summary():
     4. Download profile pictures of staff members.
 
     
-    The whole proces will take 2 hours - 3 hours
+    The whole proces might take an hour
     Do you wish to proceed? (y/n): 
     """
     print(summary)
@@ -684,7 +765,7 @@ def get_user_confirmation():
 def main():
     print_summary()
     get_user_confirmation()
-    harvest_json_and_write_to_file_uustaffpages(UUSTAFF_HARVEST_FILENAME, API_PP, UUSTAFF_MAX_RECS_TO_HARVEST)
+    # harvest_json_and_write_to_file_uustaffpages(UUSTAFF_HARVEST_FILENAME, API_PP, UUSTAFF_MAX_RECS_TO_HARVEST)
     solislist = persons_active()
     parsed_results = connect_pure_with_uustaffpages(API_PP, solislist)
     merged_df = dowload_profilepictures(parsed_results)
